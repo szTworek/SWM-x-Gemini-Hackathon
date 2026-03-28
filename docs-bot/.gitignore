@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+.venv/
+.env
+credentials.json
+token.json
+.python-version
+*.lock
+
+/*__pycache__/
+*.pyc
