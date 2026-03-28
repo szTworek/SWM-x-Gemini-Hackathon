@@ -113,6 +113,12 @@ class MeetingPipelineService:
             summary_doc_id = summary.get('summaryDocId')
             summary_doc_link = summary.get('summaryDocLink')
 
+        if summary_doc_link:
+            append_text_to_doc(
+                doc_id,
+                f"## Summary Document\n- Open summary: {summary_doc_link}"
+            )
+
         return {
             'meetId': meet_id,
             'processed': True,
