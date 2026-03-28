@@ -46,13 +46,12 @@ def batch_fact_check_doc(doc_id):
     print("🔍 2. Sending to Gemini for Fact-Checking (with Google Search)...")
     client = genai.Client()
     
-    # We force Gemini to output strictly as JSON so we can parse it programmatically
     prompt = f"""
     You are a post-meeting fact-checker. 
     Read the following transcript. Identify any verifiable factual claims (e.g., dates, numbers, historical events, science, company facts).
     Use the Google Search tool to verify them.
     
-    Return ONLY a raw JSON array of objects with this exact structure:
+    Return ONLY a raw JSON array of objects with this exact structure, and NO other text:
     [
         {{
             "exact_quote": "the exact sentence from the transcript that contains the claim",
@@ -66,21 +65,32 @@ def batch_fact_check_doc(doc_id):
     {full_transcript}
     """
 
+    # We removed the JSON mime_type so it doesn't crash the Google Search tool
     response = client.models.generate_content(
         model='gemini-2.5-flash',
         contents=prompt,
         config=types.GenerateContentConfig(
             tools=[{"google_search": {}}],
-            temperature=0.1,
-            # This forces the SDK to treat the response as pure JSON
-            response_mime_type="application/json", 
+            temperature=0.1
         )
     )
     
     try:
-        fact_checks = json.loads(response.text)
-    except json.JSONDecodeError:
-        print("❌ Failed to parse Gemini's response as JSON.")
+        # Clean up the response. Sometimes Gemini wraps JSON in markdown blockticks like ```json ... ```
+        raw_text = response.text.strip()
+        if raw_text.startswith("```json"):
+            raw_text = raw_text[7:] # remove the opening tags
+        if raw_text.startswith("```"):
+            raw_text = raw_text[3:] 
+        if raw_text.endswith("```"):
+            raw_text = raw_text[:-3] # remove the closing tags
+            
+        clean_json_string = raw_text.strip()
+        
+        fact_checks = json.loads(clean_json_string)
+    except json.JSONDecodeError as e:
+        print(f"❌ Failed to parse Gemini's response as JSON: {e}")
+        print("Raw response was:", response.text)
         return
 
     if not fact_checks:
@@ -138,6 +148,6 @@ def batch_fact_check_doc(doc_id):
 
 if __name__ == "__main__":
     # Paste the Google Doc ID of a test transcript here!
-    TEST_TRANSCRIPT_ID = "YOUR_TEST_DOCUMENT_ID_HERE" 
+    TEST_TRANSCRIPT_ID = "10F9t7efM_64kVAkmk6jmSwVThC87vjE92WkfcwaUOqQ" 
     
     batch_fact_check_doc(TEST_TRANSCRIPT_ID)
