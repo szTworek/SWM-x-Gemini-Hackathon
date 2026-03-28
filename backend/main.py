@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from routers import meeting
 from routers import config
-
+from routers import bot_media
 app = FastAPI()
 
 app.add_middleware(
@@ -17,6 +17,7 @@ app.add_middleware(
 
 app.include_router(meeting.router)
 app.include_router(config.router)
+app.include_router(bot_media.router)
 @app.get("/")
 async def root():
     return {"message": "Hello World"}

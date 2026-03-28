@@ -80,7 +80,7 @@ async def create_recall_bot(meet_id: str, bot_name: str = "Meeting Assistant"):
 
 async def leave_recall_bot(bot_id: str) -> bool:
     """
-    Wysyła sygnał do Recall.ai, aby bot natychmiast opuścił spotkanie.
+    Sends a signal to Recall.ai for the bot to immediately leave the meeting.
     """
     headers = {
         "Authorization": f"Token {RECALL_API_KEY}",
@@ -92,11 +92,80 @@ async def leave_recall_bot(bot_id: str) -> bool:
         try:
             response = await client.post(url, headers=headers, timeout=10.0)
             if response.status_code in (200, 201, 204):
-                print(f"[RecallAI] Bot {bot_id} otrzymał polecenie opuszczenia spotkania.")
+                print(f"[RecallAI] Bot {bot_id} has been told to leave the meeting.")
                 return True
             else:
-                print(f"[RecallAI] Błąd wycofywania bota {bot_id}: {response.text}")
+                print(f"[RecallAI] Error withdrawing bot {bot_id}: {response.text}")
                 return False
         except Exception as e:
-            print(f"[RecallAI] Wyjątek podczas wycofywania bota {bot_id}: {e}")
+            print(f"[RecallAI] Exception while withdrawing bot {bot_id}: {e}")
             return False
+
+
+async def send_chat_message(bot_id: str, message: str) -> bool:
+    """
+    Sends a chat message via the bot to all participants in the meeting.
+    Google Meet limit: 500 characters, recipient: 'everyone'.
+    """
+    headers = {
+        "Authorization": f"Token {RECALL_API_KEY}",
+        "Content-Type": "application/json"
+    }
+    url = f"{RECALL_BASE_URL}/bot/{bot_id}/send_chat_message/"
+
+    # Google Meet has a 500-character limit — trim with a notice if needed
+    if len(message) > 490:
+        message = message[:487] + "..."
+
+    payload = {
+        "to": "everyone",
+        "message": message,
+    }
+
+    async with httpx.AsyncClient() as client:
+        try:
+            response = await client.post(url, json=payload, headers=headers, timeout=10.0)
+            if response.status_code in (200, 201, 204):
+                print(f"[RecallAI] Chat message sent via bot {bot_id}: {message[:80]}...")
+                return True
+            else:
+                print(f"[RecallAI] Failed to send chat message: {response.status_code} {response.text}")
+                return False
+        except Exception as e:
+            print(f"[RecallAI] Exception sending chat message: {e}")
+            return False
+
+
+async def get_chat_messages(bot_id: str, limit: int = 20) -> list[dict]:
+    """
+    Fetches the last `limit` chat messages for a bot session via Recall.ai REST API.
+    Returns a list of dicts with keys: sender_name, message, created_at.
+    """
+    headers = {
+        "Authorization": f"Token {RECALL_API_KEY}",
+        "Accept": "application/json",
+    }
+    url = f"{RECALL_BASE_URL}/bot/{bot_id}/chat_messages/"
+    params = {"page_size": max(1, min(limit, 100))}
+
+    async with httpx.AsyncClient() as client:
+        try:
+            response = await client.get(url, headers=headers, params=params, timeout=10.0)
+            if response.status_code == 200:
+                data = response.json()
+                results = data.get("results", data) if isinstance(data, dict) else data
+                messages = []
+                for item in results[-limit:]:
+                    sender = item.get("participant", {})
+                    messages.append({
+                        "sender": sender.get("name", "Unknown"),
+                        "message": item.get("text", item.get("message", "")),
+                        "created_at": item.get("created_at", ""),
+                    })
+                return messages
+            else:
+                print(f"[RecallAI] Failed to get chat messages: {response.status_code} {response.text}")
+                return []
+        except Exception as e:
+            print(f"[RecallAI] Exception getting chat messages: {e}")
+            return []

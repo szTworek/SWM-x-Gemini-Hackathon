@@ -51,6 +51,13 @@
         .modal-body::-webkit-scrollbar { width: 8px; }
         .modal-body::-webkit-scrollbar-track { background: #202124; }
         .modal-body::-webkit-scrollbar-thumb { background: #5f6368; border-radius: 4px; }
+
+        /* --- WYKRESY AGENTA --- */
+        .charts-gallery { display: flex; flex-direction: column; gap: 10px; }
+        .chart-item { position: relative; border-radius: 6px; overflow: hidden; border: 1px solid #dadce0; background: #f1f3f4; }
+        .chart-item img { width: 100%; display: block; border-radius: 6px; cursor: zoom-in; }
+        .chart-item .chart-label { font-size: 10px; color: #5f6368; padding: 4px 8px; text-align: center; background: #f8f9fa; }
+        .no-charts-msg { font-size: 12px; color: #80868b; font-style: italic; text-align: center; }
     </style>
 </head>
 <body>
@@ -90,6 +97,13 @@
             <label for="jira-key">Klucz API Jira</label>
             <input type="password" id="jira-key" placeholder="Wprowadź token Jira...">
             <button id="save-config-btn" class="btn-primary" style="margin-top: 4px;">Zapisz konfigurację</button>
+        </div>
+    </div>
+
+    <div class="card">
+        <h3>Wykresy Agenta</h3>
+        <div id="charts-container" class="charts-gallery">
+            <div id="no-charts-msg" class="no-charts-msg">Agent nie wygenerował jeszcze żadnych wykresów...</div>
         </div>
     </div>
 

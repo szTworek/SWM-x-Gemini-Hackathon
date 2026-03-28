@@ -6,12 +6,13 @@ import sympy as sp
 import textwrap
 import asyncio
 import re
+from typing import Callable, Optional
 
 # ── CONFIGURATION ──────────────────────────────────────────────────────────────
 
 ALLOWED_IMPORTS = {
     "math", "statistics", "itertools", "functools", "collections",
-    "numpy", "sympy", "json", "re", "datetime", "matplotlib", "plt", "pandas", "PIL", "io"
+    "numpy", "sympy", "json", "re", "datetime", "matplotlib", "plt", "pandas", "PIL", "io", "base64"
 }
 
 # ── 1. TOOL: SYMBOLIC MATH (SymPy) ──────────────────────────────
@@ -49,7 +50,6 @@ async def do_web_search(query: str) -> str:
 
     url = "https://api.search.brave.com/res/v1/web/search"
     headers = {"X-Subscription-Token": api_key, "Accept": "application/json"}
-    # Changed search_lang to 'en'
     params = {"q": query, "count": 6, "search_lang": "en"}
 
     try:
@@ -74,7 +74,13 @@ async def do_web_search(query: str) -> str:
 # ── 3. TOOL: SAFE PYTHON SANDBOX ───────────────────────────────────
 
 def safe_exec(code: str) -> str:
-    """Runs Python code. Automatically handles plots and UTF-8 encoding."""
+    """
+    Runs Python code in a sandbox.
+    If matplotlib generates a chart, the PNG is captured as base64 and embedded
+    in the return string using [PLOT_B64]...[/PLOT_B64] markers.
+    The caller (_dispatch_tool) is responsible for extracting and forwarding
+    the image from async context.
+    """
     
     allowed_list = list(ALLOWED_IMPORTS) + [
         "matplotlib", "numpy", "PIL", "six", "cycler", "dateutil", "kiwisolver", 
@@ -86,9 +92,9 @@ def safe_exec(code: str) -> str:
     for f in forbidden:
         if f in code: return f"Blocked: code contains forbidden phrase '{f}'"
 
-    # Wrapper fixing Windows environment and Matplotlib
+    # Wrapper that captures plots as base64 and prints them with a special marker
     header = textwrap.dedent("""
-        import sys, io, builtins, matplotlib
+        import sys, io, builtins, matplotlib, base64
         if sys.stdout.encoding != 'utf-8':
             sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
         
@@ -97,8 +103,12 @@ def safe_exec(code: str) -> str:
         import numpy as np
 
         def _mock_show(*args, **kwargs):
-            plt.savefig('output_plot.png')
-            print("[SYSTEM: Plot has been generated and saved as output_plot.png]")
+            buf = io.BytesIO()
+            plt.savefig(buf, format='png', bbox_inches='tight')
+            buf.seek(0)
+            b64 = base64.b64encode(buf.read()).decode('utf-8')
+            buf.close()
+            print(f"[PLOT_B64]{b64}[/PLOT_B64]")
         plt.show = _mock_show
 
         allowed_names = set(ALLOWED_LIST_PLACEHOLDER)
@@ -110,6 +120,7 @@ def safe_exec(code: str) -> str:
                 return _real_import(name, globals, locals, fromlist, level)
             raise ImportError(f"Import '{name}' is not allowed in this sandbox.")
         builtins.__import__ = _safe_import
+    
     """).replace("ALLOWED_LIST_PLACEHOLDER", str(allowed_list))
 
     full_script = header + "\n" + textwrap.dedent(code)
@@ -123,11 +134,23 @@ def safe_exec(code: str) -> str:
         if result.returncode != 0:
             return f"Code execution error:\n{result.stderr.strip()}"
         
-        output = result.stdout.strip()
-        if os.path.exists("output_plot.png"):
-            output += "\n\n(Success: Graphical file output_plot.png is ready for review)"
-            
-        return output or "Code executed successfully (no text output)."
+        return result.stdout or "Code executed successfully (no text output)."
 
     except Exception as e:
         return f"Critical sandbox error: {e}"
+
+# ── 4. TOOL: SEND CHAT MESSAGE ───────────────────────────────────────
+
+async def do_send_chat(message: str, chat_callback: Optional[Callable] = None) -> str:
+    """
+    Sends a plain text message to the Google Meet chat via the Recall.ai bot.
+    chat_callback is an async function: (message: str) -> None
+    """
+    if not chat_callback:
+        return "Error: No chat callback configured — bot not connected."
+    
+    try:
+        await chat_callback(message, is_text=True)
+        return f"Message sent to chat: {message[:100]}"
+    except Exception as e:
+        return f"Failed to send chat message: {e}"

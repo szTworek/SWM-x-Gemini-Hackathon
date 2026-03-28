@@ -1,5 +1,8 @@
 import asyncio
 import os
+import re
+import uuid
+from typing import Callable, Optional
 from dotenv import load_dotenv
 
 from google import genai
@@ -15,9 +18,9 @@ from google.genai.types import (
 
 # Fix imports when used from main backend context
 try:
-    from backend.services.agent_tools import do_math, safe_exec, do_web_search
+    from backend.services.agent_tools import do_math, safe_exec, do_web_search, do_send_chat
 except ImportError:
-    from services.agent_tools import do_math, safe_exec, do_web_search
+    from services.agent_tools import do_math, safe_exec, do_web_search, do_send_chat
 
 load_dotenv()
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
@@ -91,12 +94,34 @@ TOOLS = [
                 required=["focus"],
             ),
         ),
+        FunctionDeclaration(
+            name="send_chat_message",
+            description="Sends a text message to the Google Meet chat so all participants can read it. Use this to share results, summaries, links or any important information with the participants directly in the chat.",
+            parameters=Schema(
+                type="OBJECT",
+                properties={
+                    "message": Schema(type="STRING", description="The message text to send to the meeting chat (max 490 characters)"),
+                },
+                required=["message"],
+            ),
+        ),
+        FunctionDeclaration(
+            name="read_chat",
+            description="Reads the most recent chat messages from the meeting. Use this to catch up on what participants wrote in the chat, or when asked about the chat history.",
+            parameters=Schema(
+                type="OBJECT",
+                properties={
+                    "limit": Schema(type="INTEGER", description="Number of recent messages to fetch (1-50, default 10)"),
+                },
+                required=[],
+            ),
+        ),
     ])
 ]
 
 
 class AgentService:
-    def __init__(self):
+    def __init__(self, tool_event_callback: Optional[Callable] = None, chat_callback: Optional[Callable] = None, get_chat_messages_callback: Optional[Callable] = None):
         self.api_key = GEMINI_API_KEY
         if not self.api_key:
             print("Warning: GEMINI_API_KEY not found in environment!")
@@ -105,6 +130,14 @@ class AgentService:
         self.session_context = None
         self.out_queue = asyncio.Queue()
         self.sender_task = None
+        # Optional async callback: (tool_id: str, tool_name: str, log: str) -> None
+        self.tool_event_callback = tool_event_callback
+        # Optional async callback for sending to Meet chat:
+        #   - Plain text: (message: str, is_text: bool) -> None
+        #   - Chart PNG:  (plot_b64: str) -> None  (is_text defaults to False)
+        self.chat_callback = chat_callback
+        # Optional async callback: (limit: int) -> list[dict]
+        self.get_chat_messages_callback = get_chat_messages_callback
 
     async def start_session(self):
         """Initializes the connection with Gemini Live API."""
@@ -205,7 +238,22 @@ class AgentService:
         async def _handle_tool_call(tool_call):
             responses = []
             for fc in tool_call.function_calls:
+                # Unique ID per tool invocation so the UI can track each run separately
+                tool_run_id = str(uuid.uuid4())[:8]
+                args_preview = ", ".join(f"{k}={repr(v)[:60]}" for k, v in dict(fc.args).items())
+                start_log = f"▶ Wywołano z: {args_preview}" if args_preview else "▶ Wywołano"
+
+                if self.tool_event_callback:
+                    asyncio.create_task(self.tool_event_callback(tool_run_id, fc.name, start_log))
+
                 result = await self._dispatch_tool(fc.name, dict(fc.args))
+
+                # Trim long results so the UI stays readable
+                result_preview = str(result)[:200] + ("..." if len(str(result)) > 200 else "")
+                done_log = f"✅ Zakończono. Wynik: {result_preview}"
+                if self.tool_event_callback:
+                    asyncio.create_task(self.tool_event_callback(tool_run_id, fc.name, done_log))
+
                 responses.append({"id": fc.id, "name": fc.name, "response": {"result": result}})
             try:
                 await self.session.send_tool_response(function_responses=responses)
@@ -213,8 +261,16 @@ class AgentService:
                 print(f"[AGENT] Failed to send tool response: {e}")
 
         try:
-            while True:  # <-- Keep listening across multiple turns
+            while True:
+                # Track whether we received any message in this turn.
+                # If session.receive() returns zero messages (StopAsyncIteration immediately),
+                # it means the connection is dead — break to avoid a busy spin-loop
+                # that would starve the entire asyncio event loop.
+                got_message = False
+
                 async for message in self.session.receive():
+                    got_message = True
+
                     if message.tool_call:
                         # Fire-and-forget — never block this loop or server pings will time out
                         asyncio.create_task(_handle_tool_call(message.tool_call))
@@ -230,6 +286,16 @@ class AgentService:
                     if message.server_content and message.server_content.turn_complete:
                         print("🤖 Agent: [Turn Complete] — waiting for next turn...")
 
+                if not got_message:
+                    # session.receive() returned without yielding anything —
+                    # this means the WebSocket session has closed on the Gemini side.
+                    print("[AGENT RECEIVER] session.receive() returned empty — session closed, stopping receiver.")
+                    break
+
+                # Always yield to the event loop between turns.
+                # This prevents starvation if receive() returns synchronously.
+                await asyncio.sleep(0)
+
         except asyncio.CancelledError:
             pass
         except Exception as e:
@@ -244,9 +310,36 @@ class AgentService:
             if name == "math_solve":
                 return await asyncio.to_thread(do_math, args.get("expression", ""), args.get("operation", ""))
             if name == "execute_python":
-                return await asyncio.to_thread(safe_exec, args.get("code", ""))
+                raw = await asyncio.to_thread(safe_exec, args.get("code", ""))
+                # Extract PLOT_B64 marker and call chat_callback from async context
+                match = re.search(r'\[PLOT_B64\](.*?)\[/PLOT_B64\]', raw, re.DOTALL)
+                if match:
+                    plot_b64 = match.group(1).strip()
+                    clean_output = re.sub(r'\[PLOT_B64\].*?\[/PLOT_B64\]', '', raw, flags=re.DOTALL).strip()
+                    if self.chat_callback:
+                        try:
+                            await self.chat_callback(plot_b64, is_text=False)
+                        except Exception as e:
+                            print(f"[AGENT] Chart callback error: {e}")
+                    return clean_output + "\n\n✅ Chart generated and sent to Meet chat." if clean_output else "✅ Chart generated and sent to Meet chat."
+                return raw
             if name == "analyze_screen":
                 return f"Currently analyzing: {args.get('focus')}. Data processed."
+            if name == "send_chat_message":
+                return await do_send_chat(args.get("message", ""), self.chat_callback)
+            if name == "read_chat":
+                limit = min(max(int(args.get("limit", 10)), 1), 50)
+                if not self.get_chat_messages_callback:
+                    return "Error: Chat reading is not configured for this session."
+                messages = await self.get_chat_messages_callback(limit)
+                if not messages:
+                    return "No chat messages found."
+                lines = []
+                for m in messages:
+                    ts = m.get("created_at", "")[:19].replace("T", " ") if m.get("created_at") else ""
+                    prefix = f"[{ts}] " if ts else ""
+                    lines.append(f"{prefix}{m['sender']}: {m['message']}")
+                return f"Last {len(messages)} chat message(s):\n" + "\n".join(lines)
             return "Error: Unknown tool."
         except Exception as e:
             return f"Tool execution error: {e}"

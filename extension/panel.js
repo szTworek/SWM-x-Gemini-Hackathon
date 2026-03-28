@@ -169,6 +169,11 @@ document.addEventListener('DOMContentLoaded', () => {
     const toolsContainer = document.getElementById('tools-container');
     const noToolsMsg = document.getElementById('no-tools-msg');
 
+    // Elementy DOM dla wykresów
+    const chartsContainer = document.getElementById('charts-container');
+    const noChartsMsg = document.getElementById('no-charts-msg');
+    let chartCounter = 0;
+
     // Elementy DOM Modala
     const toolModal = document.getElementById('tool-modal');
     const modalTitle = document.getElementById('modal-title');
@@ -191,6 +196,9 @@ document.addEventListener('DOMContentLoaded', () => {
             }
             if (data.event === 'tool_update') {
                 handleToolEvent(data.tool_id, data.tool_name, data.log);
+            }
+            if (data.event === 'agent_chart') {
+                handleChartEvent(data.image_b64);
             }
         } catch (e) {
             console.error("WS parse error:", e);
@@ -271,6 +279,33 @@ document.addEventListener('DOMContentLoaded', () => {
                 appendLogToModal(formattedLog);
             }
         }
+    }
+
+    function handleChartEvent(imageB64) {
+        chartCounter++;
+        noChartsMsg.style.display = 'none';
+
+        const wrapper = document.createElement('div');
+        wrapper.className = 'chart-item';
+
+        const img = document.createElement('img');
+        img.src = `data:image/png;base64,${imageB64}`;
+        img.alt = `Wykres #${chartCounter}`;
+        img.title = 'Kliknij, aby powiększyć';
+        img.onclick = () => {
+            const win = window.open();
+            win.document.write(`<img src="${img.src}" style="max-width:100%;">`);
+        };
+
+        const label = document.createElement('div');
+        label.className = 'chart-label';
+        label.textContent = `📊 Wykres #${chartCounter} — ${new Date().toLocaleTimeString()}`;
+
+        wrapper.appendChild(img);
+        wrapper.appendChild(label);
+        chartsContainer.appendChild(wrapper);
+
+        setLog(`📊 Nowy wykres wygenerowany przez agenta.`);
     }
 
     function createToolListItem(toolId, toolName) {

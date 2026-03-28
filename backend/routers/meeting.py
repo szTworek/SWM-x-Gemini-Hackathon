@@ -5,7 +5,7 @@ import logging
 import random
 from typing import Dict, List
 from services.meeting import create_meeting_if_not_exists, get_meeting, set_bot_active
-from services.recallai_api import create_recall_bot
+from services.recallai_api import create_recall_bot, send_chat_message, get_chat_messages
 
 router = APIRouter(prefix="/meeting")
 
@@ -109,7 +109,8 @@ agent_receive_tasks: Dict[str, asyncio.Task] = {}
 async def consume_agent_responses(meet_id: str, agent: AgentService):
     if meet_id not in bot_audio_queues:
         bot_audio_queues[meet_id] = asyncio.Queue()
-        
+
+    print(f"[AGENT CONSUMER] Starting receiver task for {meet_id}")
     try:
         async for chunk in agent.receive_responses():
             # Responses are returned as raw PCM bytes. We push them directly
@@ -119,6 +120,8 @@ async def consume_agent_responses(meet_id: str, agent: AgentService):
         pass
     except Exception as e:
         print(f"[AGENT CONSUMER] Event stream ended/error for {meet_id}: {e}")
+    finally:
+        print(f"[AGENT CONSUMER] Receiver task ended for {meet_id}")
 
 
 
@@ -127,11 +130,71 @@ async def toggle_gemini(meet_id: str):
     current = gemini_active_state.get(meet_id, False)
     new_state = not current
     gemini_active_state[meet_id] = new_state
-    
+
     if new_state:
         status_str = "ON"
         if meet_id not in active_agents:
-            agent = AgentService()
+
+            async def broadcast_tool_event(tool_id: str, tool_name: str, log: str):
+                """Forwards tool_update events to all WebSocket clients for this meeting."""
+                message = {
+                    "event": "tool_update",
+                    "tool_id": tool_id,
+                    "tool_name": tool_name,
+                    "log": log,
+                }
+                for ws in list(active_connections.get(meet_id, [])):
+                    try:
+                        await ws.send_json(message)
+                    except Exception as e:
+                        logging.warning(f"[WS BROADCAST] Failed to send tool event: {e}")
+
+            async def chat_callback(payload: str, is_text: bool = False):
+                """
+                Sends either a plain text message or a chart image to the Meet chat.
+                - is_text=True  → plain text message sent directly to chat
+                - is_text=False → payload is a base64 PNG; we send a short notice
+                  (Google Meet chat doesn't support image attachments, so we send
+                   a text summary and log the chart for the extension)
+                """
+                meeting = get_meeting(meet_id)
+                bot_id = meeting.get("bot_id") if meeting else None
+                if not bot_id:
+                    logging.warning(f"[CHAT] No active bot_id for meeting {meet_id}, cannot send chat message.")
+                    return
+
+                if is_text:
+                    await send_chat_message(bot_id, payload)
+                else:
+                    # Google Meet chat doesn't support images — send a text notice and
+                    # forward the base64 chart to the extension panel via WebSocket
+                    notice = "📊 A chart has been generated. Check the SWM Assistant panel to view it."
+                    await send_chat_message(bot_id, notice)
+
+                    # Also push the chart to the extension via WebSocket as a special event
+                    chart_event = {
+                        "event": "agent_chart",
+                        "image_b64": payload,
+                    }
+                    for ws in list(active_connections.get(meet_id, [])):
+                        try:
+                            await ws.send_json(chart_event)
+                        except Exception as e:
+                            logging.warning(f"[WS BROADCAST] Failed to send chart event: {e}")
+
+            async def get_chat_messages_callback(limit: int = 10) -> list:
+                """Fetches the last N chat messages for the active bot in this meeting."""
+                meeting = get_meeting(meet_id)
+                bot_id = meeting.get("bot_id") if meeting else None
+                if not bot_id:
+                    return []
+                return await get_chat_messages(bot_id, limit=limit)
+
+            agent = AgentService(
+                tool_event_callback=broadcast_tool_event,
+                chat_callback=chat_callback,
+                get_chat_messages_callback=get_chat_messages_callback,
+            )
             await agent.start_session()
             active_agents[meet_id] = agent
             agent_receive_tasks[meet_id] = asyncio.create_task(consume_agent_responses(meet_id, agent))
@@ -146,6 +209,7 @@ async def toggle_gemini(meet_id: str):
 
     print(f"\n[🚀 REACTING] Changed Gemini Live sending mode to: {status_str} for {meet_id}\n")
     return {"meet_id": meet_id, "sending_to_gemini": new_state}
+
 
 
 import time
