@@ -81,7 +81,7 @@ async def create_bot(meet_id: str):
     except Exception as e:
         raise e
 
-    set_bot_active(meet_id, True)
+    set_bot_active(meet_id=meet_id, bot_id=bot_id, is_active=True)
 
     return {"message": "Bot creation process started", "bot_id": bot_id}
 

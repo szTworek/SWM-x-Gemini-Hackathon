@@ -68,3 +68,27 @@ async def create_recall_bot(meet_id: str, bot_name: str = "Meeting Assistant"):
             raise HTTPException(status_code=500, detail=f"Recall API Error: {response.text}")
 
         return response.json()
+
+
+async def leave_recall_bot(bot_id: str) -> bool:
+    """
+    Wysyła sygnał do Recall.ai, aby bot natychmiast opuścił spotkanie.
+    """
+    headers = {
+        "Authorization": f"Token {RECALL_API_KEY}",
+        "Content-Type": "application/json"
+    }
+    url = f"{RECALL_BASE_URL}/bot/{bot_id}/leave_call/"
+
+    async with httpx.AsyncClient() as client:
+        try:
+            response = await client.post(url, headers=headers, timeout=10.0)
+            if response.status_code in (200, 201, 204):
+                print(f"[RecallAI] Bot {bot_id} otrzymał polecenie opuszczenia spotkania.")
+                return True
+            else:
+                print(f"[RecallAI] Błąd wycofywania bota {bot_id}: {response.text}")
+                return False
+        except Exception as e:
+            print(f"[RecallAI] Wyjątek podczas wycofywania bota {bot_id}: {e}")
+            return False
