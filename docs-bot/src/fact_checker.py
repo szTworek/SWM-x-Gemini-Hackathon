@@ -25,35 +25,22 @@ def live_fact_check(transcript_line):
     """
     
     try:
-        # We use gemini-2.5-flash because it is fast enough for live processing
         response = client.models.generate_content(
             model='gemini-2.5-flash',
             contents=prompt,
             config=types.GenerateContentConfig(
-                # THIS IS THE MAGIC! It gives the model access to live Google Search
                 tools=[{"google_search": {}}],
-                temperature=0.1 # Keep it focused and analytical
+                temperature=0.1 
             )
         )
         
         result = response.text.strip()
         
-        # If Gemini decides it's just casual chat, we do nothing.
         if result == "SKIP" or result.startswith("SKIP"):
             return None
             
         return result
         
     except Exception as e:
-        print(f"⚠️ Fact check failed: {e}")
+        print(f"Fact check failed: {e}")
         return None
-
-# --- Quick Local Test ---
-if __name__ == "__main__":
-    print("Testing a casual sentence...")
-    print(live_fact_check("Hey guys, thanks for joining the call today.")) 
-    # Should print: None
-    
-    print("\nTesting a factual claim...")
-    print(live_fact_check("I'm pretty sure Google was founded in 1995 by Elon Musk.")) 
-    # Should print a correction based on a live Google Search!

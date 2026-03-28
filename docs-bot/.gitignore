@@ -6,3 +6,6 @@ credentials.json
 token.json
 .python-version
 *.lock
+
+/*__pycache__/
+*.pyc
