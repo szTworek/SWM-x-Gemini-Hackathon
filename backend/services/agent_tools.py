@@ -8,6 +8,11 @@ import asyncio
 import re
 from typing import Callable, Optional
 
+# Heavy vision deps are imported lazily inside functions to avoid
+# crashing the server if a system lib (e.g. libGL) is absent.
+_plot_model = None  # YOLO model, loaded on first use
+_plot_model_loaded = False
+
 # ── CONFIGURATION ──────────────────────────────────────────────────────────────
 
 ALLOWED_IMPORTS = {
@@ -154,3 +159,89 @@ async def do_send_chat(message: str, chat_callback: Optional[Callable] = None) -
         return f"Message sent to chat: {message[:100]}"
     except Exception as e:
         return f"Failed to send chat message: {e}"
+
+# ── 5. TOOL: PLOT EXTRACTION (YOLO) ──────────────────────────────
+
+def _get_plot_model():
+    """Lazily loads the YOLO model on first call."""
+    global _plot_model, _plot_model_loaded
+    if _plot_model_loaded:
+        return _plot_model
+    _plot_model_loaded = True
+    try:
+        from ultralytics import YOLO
+        _model_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "best.pt")
+        _plot_model = YOLO(_model_path)
+        print(f"[agent_tools] YOLO model loaded from {_model_path}")
+    except Exception as e:
+        print(f"[agent_tools] Warning: YOLO model not loaded ({e}). extract_plots unavailable.")
+        _plot_model = None
+    return _plot_model
+
+
+def do_extract_plots(image_bytes: bytes) -> str:
+    """
+    Uses YOLO (best.pt) to detect and crop plots from image bytes.
+    Returns a description of found plots; extracted crops are returned
+    as base64-encoded JPEG strings separated by [PLOT_CROP]...[/PLOT_CROP] markers
+    so the caller can forward them to the meeting chat.
+    """
+    import cv2
+    import numpy as np
+    import base64
+
+    model = _get_plot_model()
+    if model is None:
+        return "Error: YOLO model 'best.pt' not loaded — extract_plots unavailable."
+
+    nparr = np.frombuffer(image_bytes, np.uint8)
+    img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+    if img is None:
+        return "Error: Failed to decode image for plot extraction."
+
+    results = model.predict(source=img, conf=0.95, iou=0.5, verbose=False)
+
+    boxes = results[0].boxes.xyxy.cpu().numpy() if results[0].boxes is not None else []
+    scores = results[0].boxes.conf.cpu().numpy() if results[0].boxes is not None else []
+
+    if len(boxes) == 0:
+        return "No plots detected with high confidence (>=0.95) in the current video frame."
+
+    crops_b64 = []
+    for box, score in zip(boxes, scores):
+        x1, y1, x2, y2 = map(int, box[:4])
+        x1, y1 = max(0, x1), max(0, y1)
+        x2, y2 = min(img.shape[1], x2), min(img.shape[0], y2)
+        crop = img[y1:y2, x1:x2]
+        _, buf = cv2.imencode(".jpg", crop)
+        crops_b64.append(base64.b64encode(buf.tobytes()).decode("utf-8"))
+
+    markers = "".join(f"[PLOT_CROP]{b64}[/PLOT_CROP]" for b64 in crops_b64)
+    return f"Extracted {len(boxes)} plot(s) from video frame.{markers}"
+
+
+# ── 6. TOOL: PLOT DIGITIZATION (Gemini Vision) ───────────────────
+
+def do_digitize_plot(image_bytes: bytes, api_key: str) -> str:
+    """
+    Sends the current video frame to Gemini Vision and asks it to return
+    the chart data as CSV. Returns the raw CSV string.
+    """
+    from google import genai
+    from google.genai import types
+
+    PROMPT = "Extract all data from this chart and return it as CSV. No explanation, no markdown, just raw CSV."
+    MODEL = "models/gemini-2.5-flash"
+
+    try:
+        client = genai.Client(api_key=api_key)
+        response = client.models.generate_content(
+            model=MODEL,
+            contents=[
+                types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg"),
+                types.Part.from_text(text=PROMPT),
+            ]
+        )
+        return response.text
+    except Exception as e:
+        return f"Error digitizing plot: {e}"

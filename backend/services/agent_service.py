@@ -18,28 +18,43 @@ from google.genai.types import (
 
 # Fix imports when used from main backend context
 try:
-    from backend.services.agent_tools import do_math, safe_exec, do_web_search, do_send_chat
+    from backend.services.agent_tools import (
+        do_math, safe_exec, do_web_search, do_send_chat,
+        do_extract_plots, do_digitize_plot
+    )
 except ImportError:
-    from services.agent_tools import do_math, safe_exec, do_web_search, do_send_chat
+    from services.agent_tools import (
+        do_math, safe_exec, do_web_search, do_send_chat,
+        do_extract_plots, do_digitize_plot
+    )
 
 load_dotenv()
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 MODEL = "models/gemini-3.1-flash-live-preview"
 
 SYSTEM_PROMPT = """
-You are an Autonomous Analytical Agent. Your task is to solve user problems using the available tools.
+You are a High-Precision Analytical Agent embedded in a Google Meet session.
 
-REASONING PROCESS:
-1. If the user asks for data you don't know -> use `web_search`.
-2. You will receive raw text from the search engine. Your task is to ANALYZE it.
-3. If there are numbers and data in the text -> use `execute_python` to clean them (e.g., using Regex) and prepare for analysis.
-4. ALWAYS consider: "Is this data worth showing on a chart?". If yes, write Python code in `execute_python` that uses matplotlib and plt.show().
-5. If the user shows you something on the camera (e.g., a chart in a newspaper) -> use `analyze_screen` to focus your attention on visual details.
-
-RULES:
+GENERAL RULES:
 - Be proactive. If you see an opportunity to create a chart or perform calculations – do it without being asked.
 - Respond naturally in English.
 - Inform the user about what you are doing (e.g., "I'm fetching the data and preparing a visualization...").
+- If the user asks for data you don't know -> use `web_search`.
+- If there are numbers in text -> use `execute_python` to clean and analyse them.
+- ALWAYS consider: "Is this data worth showing on a chart?". If yes, write matplotlib code in `execute_python`.
+
+CRITICAL PROTOCOL FOR PLOT/CHART VERIFICATION:
+1. **NEVER ESTIMATE NUMBERS BY EYE**: Your visual stream is low-fidelity. You are PROHIBITED from guessing
+   data points or percentages from the image frame.
+2. **PLOT EXTRACTION**: If the video frame contains multiple charts, call `extract_plots` first to isolate them.
+3. **MANDATORY DIGITIZATION**: If a user asks to check, verify, or analyse a chart/plot, your FIRST action
+   must be calling `digitize_plot` to convert it to raw CSV data.
+4. **RESEARCH**: Use `web_search` to find official, current statistics from reputable sources.
+5. **SCIENTIFIC COMPARISON**: Use `execute_python` to load the CSV from `digitize_plot`, combine it with
+   official data, calculate deltas, and generate a comparison chart.
+
+FAILURE CONDITION: Writing Python code like `estimated_data = [...]` based on visual guessing is prohibited.
+You must only use data returned by tools.
 """.strip()
 
 
@@ -116,6 +131,28 @@ TOOLS = [
                 required=[],
             ),
         ),
+        FunctionDeclaration(
+            name="extract_plots",
+            description="Detects and isolates individual charts/plots visible in the current video frame using a YOLO model. Use this when the frame contains multiple plots that need to be analysed separately, or before calling digitize_plot.",
+            parameters=Schema(
+                type="OBJECT",
+                properties={
+                    "reason": Schema(type="STRING", description="Brief reason why plots need to be extracted"),
+                },
+                required=[],
+            ),
+        ),
+        FunctionDeclaration(
+            name="digitize_plot",
+            description="Converts the chart/plot visible in the current video frame into raw numerical data (CSV format) using Gemini Vision. ALWAYS call this before performing any calculations on chart data — never estimate values by eye.",
+            parameters=Schema(
+                type="OBJECT",
+                properties={
+                    "reason": Schema(type="STRING", description="Brief reason why the plot needs to be digitized"),
+                },
+                required=[],
+            ),
+        ),
     ])
 ]
 
@@ -138,6 +175,8 @@ class AgentService:
         self.chat_callback = chat_callback
         # Optional async callback: (limit: int) -> list[dict]
         self.get_chat_messages_callback = get_chat_messages_callback
+        # Cache the latest video frame so plot tools can access it
+        self._last_video_frame: Optional[bytes] = None
 
     async def start_session(self):
         """Initializes the connection with Gemini Live API."""
@@ -177,9 +216,10 @@ class AgentService:
         self.out_queue.put_nowait({"type": "audio", "data": audio_bytes, "mime": mime_type})
 
     async def send_video_frame(self, frame_bytes: bytes, mime_type: str = "image/jpeg"):
-        """Queues video frames for the agent."""
+        """Queues video frames for the agent and caches the latest frame for plot tools."""
         if not self.session:
             return
+        self._last_video_frame = frame_bytes  # cache for extract_plots / digitize_plot
         self.out_queue.put_nowait({"type": "video", "data": frame_bytes, "mime": mime_type})
 
     async def _send_loop(self):
@@ -303,7 +343,7 @@ class AgentService:
 
     async def _dispatch_tool(self, name: str, args: dict) -> str:
         """Internal tool dispatcher."""
-        print(f"🔧 [AGENT] Calling tool: {name} with args {args}")
+        print(f"[AGENT] Calling tool: {name} with args {args}")
         try:
             if name == "web_search":
                 return await do_web_search(args.get("query", ""))
@@ -340,6 +380,28 @@ class AgentService:
                     prefix = f"[{ts}] " if ts else ""
                     lines.append(f"{prefix}{m['sender']}: {m['message']}")
                 return f"Last {len(messages)} chat message(s):\n" + "\n".join(lines)
+
+            # ── New chart analysis tools ──
+            if name == "extract_plots":
+                if not self._last_video_frame:
+                    return "Error: No video frame available yet — please wait for the bot to receive video."
+                raw = await asyncio.to_thread(do_extract_plots, self._last_video_frame)
+                # Forward any extracted crop images to the meeting chat
+                crops = re.findall(r'\[PLOT_CROP\](.*?)\[/PLOT_CROP\]', raw, re.DOTALL)
+                clean = re.sub(r'\[PLOT_CROP\].*?\[/PLOT_CROP\]', '', raw, flags=re.DOTALL).strip()
+                if crops and self.chat_callback:
+                    for crop_b64 in crops:
+                        try:
+                            await self.chat_callback(crop_b64.strip(), is_text=False)
+                        except Exception as e:
+                            print(f"[AGENT] Crop callback error: {e}")
+                return clean or raw
+
+            if name == "digitize_plot":
+                if not self._last_video_frame:
+                    return "Error: No video frame available yet — please wait for the bot to receive video."
+                return await asyncio.to_thread(do_digitize_plot, self._last_video_frame, self.api_key)
+
             return "Error: Unknown tool."
         except Exception as e:
             return f"Tool execution error: {e}"
