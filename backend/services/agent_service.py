@@ -1,6 +1,5 @@
 import asyncio
 import os
-import json
 from dotenv import load_dotenv
 
 from google import genai
@@ -10,6 +9,8 @@ from google.genai.types import (
     Tool,
     FunctionDeclaration,
     Schema,
+    ContextWindowCompressionConfig,
+    SlidingWindow,
 )
 
 # Fix imports when used from main backend context
@@ -111,10 +112,14 @@ class AgentService:
             response_modalities=["AUDIO"],
             tools=TOOLS,
             system_instruction=SYSTEM_PROMPT,
+            # Context window compression eliminates the 2-min (audio+video) / 15-min (audio-only)
+            # session limits by using a sliding window that discards old tokens automatically.
+            context_window_compression=ContextWindowCompressionConfig(
+                sliding_window=SlidingWindow(),
+            ),
         )
         self.session_context = self.client.aio.live.connect(model=MODEL, config=config)
         self.session = await self.session_context.__aenter__()
-        
         self.sender_task = asyncio.create_task(self._send_loop())
         print("🚀 Agent Session Ready.")
 
@@ -123,7 +128,10 @@ class AgentService:
         if self.sender_task:
             self.sender_task.cancel()
         if self.session_context:
-            await self.session_context.__aexit__(None, None, None)
+            try:
+                await self.session_context.__aexit__(None, None, None)
+            except Exception:
+                pass
             self.session = None
             self.session_context = None
             print("🛑 Agent Session Closed.")
@@ -142,18 +150,21 @@ class AgentService:
         self.out_queue.put_nowait({"type": "video", "data": frame_bytes, "mime": mime_type})
 
     async def _send_loop(self):
-        """Background task that reads from the queue and sends to Gemini, automatically batching audio."""
+        """Background task: batches queued audio/video and sends to Gemini every 500ms."""
         try:
             while True:
                 item = await self.out_queue.get()
-                
+
                 if item["type"] == "audio":
                     buffer = bytearray(item["data"])
                     mime = item["mime"]
-                    
                     video_item = None
+
+                    # Batch all pending audio into one payload (reduces API calls to ~2/sec).
+                    # The 500ms sleep also ensures the internal websocket can handle server pings.
+                    await asyncio.sleep(0.5)
+
                     try:
-                        # Batch all pending audio in the queue
                         while True:
                             nxt = self.out_queue.get_nowait()
                             if nxt["type"] == "audio":
@@ -163,60 +174,78 @@ class AgentService:
                                 break
                     except asyncio.QueueEmpty:
                         pass
-                    
+
+                    # Cap at ~4 seconds of audio to avoid sending sudden large bursts
+                    MAX_AUDIO_BYTES = 128_000
+                    if len(buffer) > MAX_AUDIO_BYTES:
+                        buffer = buffer[-MAX_AUDIO_BYTES:]
+
+                    print(f"[AGENT SENDER] Sending bundled payload -> Audio: {len(buffer)} bytes | Video: {'Yes' if video_item else 'No'}")
                     await self.session.send_realtime_input(audio=Blob(data=bytes(buffer), mime_type=mime))
-                    
+
                     if video_item:
                         await self.session.send_realtime_input(video=Blob(data=video_item["data"], mime_type=video_item["mime"]))
-                        
+
                 elif item["type"] == "video":
                     await self.session.send_realtime_input(video=Blob(data=item["data"], mime_type=item["mime"]))
+
         except asyncio.CancelledError:
             pass
         except Exception as e:
-            print(f"Agent send error: {e}")
+            print(f"[AGENT SENDER] Error: {e}")
 
     async def receive_responses(self):
         """
-        An async generator that yields audio chunks returned by Gemini.
-        It inherently handles executing tool calls and returning their results.
-        Returns bytes (PCM 24000Hz by default for Gemini Voice).
+        Async generator — yields raw PCM audio bytes from Gemini responses.
+        Handles tool calls without blocking the receive loop (important for ping handling).
         """
         if not self.session:
             return
 
-        async for message in self.session.receive():
-            if message.tool_call:
-                responses = []
-                for fc in message.tool_call.function_calls:
-                    result = await self._dispatch_tool(fc.name, dict(fc.args))
-                    responses.append({"id": fc.id, "name": fc.name, "response": {"result": result}})
+        async def _handle_tool_call(tool_call):
+            responses = []
+            for fc in tool_call.function_calls:
+                result = await self._dispatch_tool(fc.name, dict(fc.args))
+                responses.append({"id": fc.id, "name": fc.name, "response": {"result": result}})
+            try:
                 await self.session.send_tool_response(function_responses=responses)
-                continue
+            except Exception as e:
+                print(f"[AGENT] Failed to send tool response: {e}")
 
-            if message.server_content and message.server_content.model_turn:
-                for part in message.server_content.model_turn.parts:
-                    if part.text:
-                        print(f"🤖 Agent [TEXT]: {part.text}")
-                    if part.inline_data:
-                        print(f"🤖 Agent [AUDIO]: Receiving voice response chunk ({len(part.inline_data.data)} bytes)...")
-                        # Yield raw audio data bytes
-                        yield part.inline_data.data
+        try:
+            while True:  # <-- Keep listening across multiple turns
+                async for message in self.session.receive():
+                    if message.tool_call:
+                        # Fire-and-forget — never block this loop or server pings will time out
+                        asyncio.create_task(_handle_tool_call(message.tool_call))
+                        continue
 
-            if message.server_content and message.server_content.turn_complete:
-                print(f"🤖 Agent: [Zakończył mówić / Turn Complete]")
+                    if message.server_content and message.server_content.model_turn:
+                        for part in message.server_content.model_turn.parts:
+                            if part.text:
+                                print(f"🤖 Agent [TEXT]: {part.text}")
+                            if part.inline_data:
+                                yield part.inline_data.data
+
+                    if message.server_content and message.server_content.turn_complete:
+                        print("🤖 Agent: [Turn Complete] — waiting for next turn...")
+
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            print(f"[AGENT RECEIVER] Session ended: {e}")
 
     async def _dispatch_tool(self, name: str, args: dict) -> str:
         """Internal tool dispatcher."""
-        print(f"🔧 [AGENT REASONING] Calling: {name} with args {args}")
+        print(f"🔧 [AGENT] Calling tool: {name} with args {args}")
         try:
-            if name == "web_search": 
+            if name == "web_search":
                 return await do_web_search(args.get("query", ""))
-            if name == "math_solve": 
-                return do_math(args.get("expression", ""), args.get("operation", ""))
-            if name == "execute_python": 
-                return safe_exec(args.get("code", ""))
-            if name == "analyze_screen": 
+            if name == "math_solve":
+                return await asyncio.to_thread(do_math, args.get("expression", ""), args.get("operation", ""))
+            if name == "execute_python":
+                return await asyncio.to_thread(safe_exec, args.get("code", ""))
+            if name == "analyze_screen":
                 return f"Currently analyzing: {args.get('focus')}. Data processed."
             return "Error: Unknown tool."
         except Exception as e:

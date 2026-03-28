@@ -28,6 +28,14 @@ async def create_recall_bot(meet_id: str, bot_name: str = "Meeting Assistant"):
     payload = {
         "meeting_url": meeting_url,
         "bot_name": bot_name,
+        "output_media": {
+            "camera": {
+                "kind": "webpage",
+                "config": {
+                    "url": f"{base_url}/bot_media/bot_sandbox/{meet_id}"
+                }
+            }
+        },
         "recording_config": {
             "transcript": {
                 "provider": {

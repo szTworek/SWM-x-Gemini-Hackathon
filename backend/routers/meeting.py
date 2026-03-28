@@ -112,6 +112,7 @@ async def recall_webhook(payload: dict):
 
 import base64
 from services.agent_service import AgentService
+from routers.bot_media import bot_audio_queues
 
 gemini_active_state: Dict[str, bool] = {}
 active_agents: Dict[str, AgentService] = {}
@@ -119,13 +120,19 @@ agent_receive_tasks: Dict[str, asyncio.Task] = {}
 
 
 async def consume_agent_responses(meet_id: str, agent: AgentService):
+    if meet_id not in bot_audio_queues:
+        bot_audio_queues[meet_id] = asyncio.Queue()
+        
     try:
-        async for _ in agent.receive_responses():
-            # Responses are returned as raw PCM bytes. We iterate over the 
-            # generator to trigger the internal prints of text to the terminal.
-            pass
+        async for chunk in agent.receive_responses():
+            # Responses are returned as raw PCM bytes. We push them directly
+            # into the outbound queue so the Sandbox HTML can play them instantly!
+            bot_audio_queues[meet_id].put_nowait(chunk)
+    except asyncio.CancelledError:
+        pass
     except Exception as e:
         print(f"[AGENT CONSUMER] Event stream ended/error for {meet_id}: {e}")
+
 
 
 @router.post("/{meet_id}/toggle-gemini")
@@ -155,6 +162,8 @@ async def toggle_gemini(meet_id: str):
 
 
 import time
+from io import BytesIO
+from PIL import Image
 
 @router.websocket("/ws/recall-media/{meet_id}")
 async def recall_media_websocket(websocket: WebSocket, meet_id: str):
@@ -183,13 +192,28 @@ async def recall_media_websocket(websocket: WebSocket, meet_id: str):
                 b64_buffer = payload.get("data", {}).get("data", {}).get("buffer", "")
                 if b64_buffer and is_gemini_on and meet_id in active_agents:
                     current_time = time.time()
-                    # Rate limit to 1 frame per second to avoid websocket limits
-                    if current_time - last_video_send_time >= 1.0:
+                    # Rate limit to 1 frame every 2 seconds.
+                    # Video tokens are VERY expensive in the Live API context window.
+                    # At 1fps + audio, the session was dying after ~1 minute.
+                    if current_time - last_video_send_time >= 2.0:
                         png_bytes = base64.b64decode(b64_buffer)
-                        await active_agents[meet_id].send_video_frame(png_bytes, mime_type="image/png")
+                        
+                        # Resize and compress to JPEG to prevent Google API WebSocket 1011 payload crashes
+                        img = Image.open(BytesIO(png_bytes))
+                        if img.mode in ('RGBA', 'P'):
+                            img = img.convert('RGB')
+                        
+                        # Gemini doesn't need 1080p. 640px is plenty for vision analysis!
+                        img.thumbnail((640, 640))
+                        
+                        out_io = BytesIO()
+                        img.save(out_io, format="JPEG", quality=80)
+                        jpeg_bytes = out_io.getvalue()
+                        
+                        await active_agents[meet_id].send_video_frame(jpeg_bytes, mime_type="image/jpeg")
                         last_video_send_time = current_time
                         if frame_count % 100 == 0:
-                            print(f"[MEDIA-WS -> GEMINI] Pushing video frame... (packet {frame_count})")
+                            print(f"[MEDIA-WS -> GEMINI] Pushing video frame (JPEG compress)... (packet {frame_count})")
                     frame_count += 1
 
     except WebSocketDisconnect:
