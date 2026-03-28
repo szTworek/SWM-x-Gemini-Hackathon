@@ -275,24 +275,98 @@ class AgentService:
         if not self.session:
             return
 
+        # Map of tool names to human-friendly display names
+        TOOL_DISPLAY_NAMES = {
+            "web_search": "🌐 Web Search",
+            "math_solve": "🧮 Math Solver",
+            "execute_python": "🐍 Python Sandbox",
+            "analyze_screen": "👁️ Screen Analysis",
+            "send_chat_message": "💬 Chat Message",
+            "read_chat": "📖 Read Chat",
+            "extract_plots": "🔍 Plot Extractor (YOLO)",
+            "digitize_plot": "📐 Plot Digitizer (Gemini)",
+        }
+
         async def _handle_tool_call(tool_call):
             responses = []
             for fc in tool_call.function_calls:
                 # Unique ID per tool invocation so the UI can track each run separately
                 tool_run_id = str(uuid.uuid4())[:8]
-                args_preview = ", ".join(f"{k}={repr(v)[:60]}" for k, v in dict(fc.args).items())
-                start_log = f"▶ Wywołano z: {args_preview}" if args_preview else "▶ Wywołano"
+                args = dict(fc.args)
+                display_name = TOOL_DISPLAY_NAMES.get(fc.name, fc.name)
+
+                # --- Build a rich, tool-specific start log ---
+                if fc.name == "web_search":
+                    start_log = f"🔎 Searching: \"{args.get('query', '')[:80]}\""
+                elif fc.name == "math_solve":
+                    start_log = f"🧮 {args.get('operation', '?')} of: {args.get('expression', '')[:60]}"
+                elif fc.name == "execute_python":
+                    code_preview = args.get('code', '')[:120].replace('\n', ' ↵ ')
+                    start_log = f"🐍 Running Python code…\n{code_preview}"
+                elif fc.name == "analyze_screen":
+                    start_log = f"👁️ Focusing on: \"{args.get('focus', 'screen')}\""
+                elif fc.name == "send_chat_message":
+                    start_log = f"💬 Sending message: \"{args.get('message', '')[:80]}\""
+                elif fc.name == "read_chat":
+                    limit = args.get('limit', 10)
+                    start_log = f"📖 Reading last {limit} chat messages…"
+                elif fc.name == "extract_plots":
+                    reason = args.get('reason', '')
+                    start_log = f"🔍 YOLO detecting plots in current video frame…" + (f"\nReason: {reason}" if reason else "")
+                elif fc.name == "digitize_plot":
+                    reason = args.get('reason', '')
+                    start_log = f"📐 Sending frame to Gemini Vision to extract chart data as CSV…" + (f"\nReason: {reason}" if reason else "")
+                else:
+                    args_preview = ", ".join(f"{k}={repr(v)[:60]}" for k, v in args.items())
+                    start_log = f"▶ Called with: {args_preview}" if args_preview else "▶ Called"
 
                 if self.tool_event_callback:
-                    asyncio.create_task(self.tool_event_callback(tool_run_id, fc.name, start_log))
+                    asyncio.create_task(self.tool_event_callback(tool_run_id, display_name, start_log))
 
-                result = await self._dispatch_tool(fc.name, dict(fc.args))
+                result = await self._dispatch_tool(fc.name, args)
 
-                # Trim long results so the UI stays readable
-                result_preview = str(result)[:200] + ("..." if len(str(result)) > 200 else "")
-                done_log = f"✅ Zakończono. Wynik: {result_preview}"
+                # --- Build a rich, tool-specific done log ---
+                result_str = str(result)
+                if fc.name == "web_search":
+                    source_count = result_str.count("SOURCE:")
+                    done_log = f"✅ Found {source_count} source(s). First 200 chars:\n{result_str[:200]}"
+                elif fc.name == "math_solve":
+                    done_log = f"✅ Result: {result_str[:200]}"
+                elif fc.name == "execute_python":
+                    if "Chart generated" in result_str or "PLOT_B64" in result_str:
+                        done_log = "✅ Python executed — 📊 chart generated and sent to chat panel."
+                    elif "error" in result_str.lower() or "Error" in result_str:
+                        done_log = f"🔴 Execution error:\n{result_str[:300]}"
+                    else:
+                        done_log = f"✅ Executed. Output:\n{result_str[:300]}"
+                elif fc.name == "analyze_screen":
+                    done_log = f"✅ Screen analysis acknowledged."
+                elif fc.name == "send_chat_message":
+                    done_log = f"✅ Message delivered to Meet chat."
+                elif fc.name == "read_chat":
+                    line_count = result_str.count('\n') + 1
+                    done_log = f"✅ Retrieved {line_count} message line(s)."
+                elif fc.name == "extract_plots":
+                    if result_str.startswith("No plots"):
+                        done_log = f"⚠️ {result_str[:200]}"
+                    elif result_str.startswith("Error"):
+                        done_log = f"🔴 {result_str[:200]}"
+                    else:
+                        crop_count = result_str.count("[PLOT_CROP]")
+                        clean = result_str.split("[PLOT_CROP]")[0].strip()
+                        done_log = f"✅ {clean}\n📦 Extracted {crop_count} crop(s) → sent to chart panel."
+                elif fc.name == "digitize_plot":
+                    if result_str.startswith("Error"):
+                        done_log = f"🔴 Digitization failed:\n{result_str[:200]}"
+                    else:
+                        row_count = result_str.count('\n')
+                        done_log = f"✅ CSV extracted — {row_count} data row(s).\nPreview:\n{result_str[:300]}"
+                else:
+                    preview = result_str[:200] + ("…" if len(result_str) > 200 else "")
+                    done_log = f"✅ Done. Result: {preview}"
+
                 if self.tool_event_callback:
-                    asyncio.create_task(self.tool_event_callback(tool_run_id, fc.name, done_log))
+                    asyncio.create_task(self.tool_event_callback(tool_run_id, display_name, done_log))
 
                 responses.append({"id": fc.id, "name": fc.name, "response": {"result": result}})
             try:

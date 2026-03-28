@@ -243,10 +243,10 @@ async def recall_media_websocket(websocket: WebSocket, meet_id: str):
                 b64_buffer = payload.get("data", {}).get("data", {}).get("buffer", "")
                 if b64_buffer and is_gemini_on and meet_id in active_agents:
                     current_time = time.time()
-                    # Rate limit to 1 frame every 2 seconds.
+                    # Rate limit to 1 frame every 1 second.
                     # Video tokens are VERY expensive in the Live API context window.
                     # At 1fps + audio, the session was dying after ~1 minute.
-                    if current_time - last_video_send_time >= 2.0:
+                    if current_time - last_video_send_time >= 1.0:
                         png_bytes = base64.b64decode(b64_buffer)
                         
                         # Resize and compress to JPEG to prevent Google API WebSocket 1011 payload crashes

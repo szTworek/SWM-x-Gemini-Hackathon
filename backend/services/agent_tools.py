@@ -242,6 +242,7 @@ def do_digitize_plot(image_bytes: bytes, api_key: str) -> str:
                 types.Part.from_text(text=PROMPT),
             ]
         )
+        print(response.text)
         return response.text
     except Exception as e:
         return f"Error digitizing plot: {e}"
