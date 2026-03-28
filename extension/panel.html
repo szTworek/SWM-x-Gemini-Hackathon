@@ -8,33 +8,61 @@
         .card { background: #fff; border-radius: 8px; padding: 16px; margin-bottom: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); border: 1px solid #e8eaed; }
         h3 { margin-top: 0; font-size: 14px; color: #5f6368; border-bottom: 1px solid #e8eaed; padding-bottom: 8px; margin-bottom: 12px; }
 
-        /* Status */
         .status-badge { display: inline-block; padding: 4px 8px; border-radius: 12px; font-size: 12px; font-weight: bold; }
         .status-disconnected { background: #fce8e6; color: #d93025; }
         .status-connected { background: #e6f4ea; color: #1e8e3e; }
 
-        /* Przyciski */
         .btn-group { display: flex; gap: 8px; margin-top: 12px; }
         button { flex: 1; padding: 8px 12px; border: none; border-radius: 4px; cursor: pointer; font-weight: 500; font-size: 13px; transition: 0.2s; }
         .btn-primary { background: #1a73e8; color: white; }
         .btn-primary:disabled { background: #8ab4f8; cursor: not-allowed; }
-        .btn-danger { background: #d93025; color: white; display: none; } /* Domyślnie ukryty */
+        .btn-danger { background: #d93025; color: white; display: none; }
         .btn-toggle { background: #5f6368; color: white; }
         .btn-toggle.active { background: #1e8e3e; }
 
-        /* Formularze */
         .form-group { display: flex; flex-direction: column; gap: 6px; }
         label { font-size: 12px; font-weight: 500; }
         input[type="text"], input[type="password"] { padding: 8px; border: 1px solid #dadce0; border-radius: 4px; font-size: 13px; outline: none; }
-        input[type="text"]:focus, input[type="password"]:focus { border-color: #1a73e8; }
 
         #system-logs { font-size: 11px; color: #80868b; margin-top: 16px; text-align: center; }
+
+        /* --- NOWE STYLE DLA NARZĘDZI --- */
+        .tools-list { display: flex; flex-direction: column; gap: 8px; }
+        .tool-item { display: flex; justify-content: space-between; align-items: center; padding: 8px 10px; background: #f1f3f4; border-radius: 6px; font-size: 13px; border: 1px solid #dadce0; }
+        .tool-name { font-weight: 600; color: #1a73e8; }
+        .tool-actions button { flex: unset; margin-left: 6px; padding: 4px 8px; font-size: 11px; }
+        .btn-view { background: #34a853; color: white; }
+        .btn-remove { background: #ea4335; color: white; }
+        .no-tools-msg { font-size: 12px; color: #80868b; font-style: italic; text-align: center; }
+
+        /* --- MODAL (WYSKAKUJĄCE OKIENKO LOGÓW) --- */
+        .modal-overlay { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.6); display: flex; justify-content: center; align-items: center; z-index: 1000; opacity: 0; pointer-events: none; transition: opacity 0.2s; }
+        .modal-overlay.active { opacity: 1; pointer-events: auto; }
+        .modal-content { background: #fff; width: 90%; height: 85%; border-radius: 8px; display: flex; flex-direction: column; box-shadow: 0 10px 25px rgba(0,0,0,0.2); transform: translateY(20px); transition: transform 0.2s; }
+        .modal-overlay.active .modal-content { transform: translateY(0); }
+        .modal-header { padding: 12px 16px; background: #f1f3f4; border-bottom: 1px solid #dadce0; border-radius: 8px 8px 0 0; display: flex; justify-content: space-between; align-items: center; }
+        .modal-header h4 { margin: 0; font-size: 15px; color: #202124; }
+        .close-modal-btn { background: none; border: none; font-size: 20px; cursor: pointer; color: #5f6368; padding: 0; line-height: 1; flex: unset; }
+        .close-modal-btn:hover { color: #d93025; }
+        .modal-body { padding: 12px; flex-grow: 1; overflow-y: auto; background: #202124; color: #e8eaed; font-family: 'Consolas', monospace; font-size: 12px; display: flex; flex-direction: column; gap: 8px; border-radius: 0 0 8px 8px;}
+        .log-entry { background: rgba(255,255,255,0.05); padding: 8px; border-radius: 4px; border-left: 3px solid #34a853; word-wrap: break-word; }
+
+        /* Scrollbar dla modala */
+        .modal-body::-webkit-scrollbar { width: 8px; }
+        .modal-body::-webkit-scrollbar-track { background: #202124; }
+        .modal-body::-webkit-scrollbar-thumb { background: #5f6368; border-radius: 4px; }
     </style>
 </head>
 <body>
 
     <div class="card">
         <h3>Status Asystenta</h3>
+
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+            <span style="font-size: 13px; font-weight: 500;">Serwer (WebSocket):</span>
+            <span id="ws-status" class="status-badge status-disconnected">🟡 Łączenie...</span>
+        </div>
+
         <div style="display: flex; justify-content: space-between; align-items: center;">
             <span style="font-size: 13px; font-weight: 500;">Połączenie bota:</span>
             <span id="bot-status" class="status-badge status-disconnected">🔴 Odłączony</span>
@@ -50,6 +78,13 @@
     </div>
 
     <div class="card">
+        <h3>Aktywne Narzędzia</h3>
+        <div id="tools-container" class="tools-list">
+            <div id="no-tools-msg" class="no-tools-msg">Agent jeszcze nie wywołał narzędzi...</div>
+            </div>
+    </div>
+
+    <div class="card">
         <h3>Konfiguracja Integracji</h3>
         <div class="form-group">
             <label for="jira-key">Klucz API Jira</label>
@@ -59,6 +94,17 @@
     </div>
 
     <div id="system-logs">Gotowy do pracy.</div>
+
+    <div id="tool-modal" class="modal-overlay">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h4 id="modal-title">Logi narzędzia</h4>
+                <button id="close-modal-btn" class="close-modal-btn">&times;</button>
+            </div>
+            <div id="modal-chat-body" class="modal-body">
+                </div>
+        </div>
+    </div>
 
     <script src="panel.js"></script>
 </body>

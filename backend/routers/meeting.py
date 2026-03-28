@@ -1,6 +1,8 @@
 import asyncio
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, HTTPException
 from pydantic import BaseModel
+import logging
+import random
 from typing import Dict, List
 from services.meeting import create_meeting_if_not_exists, get_meeting, set_bot_active
 from services.recallai_api import create_recall_bot
@@ -10,25 +12,10 @@ router = APIRouter(prefix="/meeting")
 active_connections: Dict[str, List[WebSocket]] = {}
 active_runners: Dict[str, asyncio.Task] = {}
 
-
-async def meet_runner(meet_id: str):
+async def meet_runner(meet_id):
     print(f"[Runner] Starting task for meeting: {meet_id}")
-    counter = 0
-    try:
-        while True:
-            await asyncio.sleep(5)
-            counter += 1
-            message = f"Update #{counter} for room {meet_id}"
-
-            if meet_id in active_connections:
-                for ws in active_connections[meet_id].copy():
-                    try:
-                        await ws.send_json({"text": message})
-                    except Exception:
-                        if ws in active_connections[meet_id]:
-                            active_connections[meet_id].remove(ws)
-    except asyncio.CancelledError:
-        print(f"[Runner] Stopped task for meeting: {meet_id}")
+    while True:
+        await asyncio.sleep(5)
 
 
 @router.websocket("/ws")
