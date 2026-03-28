@@ -10,7 +10,6 @@ from docsBot import authenticate_google
 load_dotenv()
 
 def batch_fact_check_doc(doc_id):
-    print("1. Reading document and mapping paragraphs...")
     creds = authenticate_google()
     docs_service = build('docs', 'v1', credentials=creds)
     
@@ -36,10 +35,8 @@ def batch_fact_check_doc(doc_id):
                 })
 
     if not full_transcript:
-        print("Document is empty.")
         return
 
-    print("2. Sending to Gemini for Fact-Checking (with Google Search)...")
     client = genai.Client()
     
     prompt = f"""
@@ -83,15 +80,11 @@ def batch_fact_check_doc(doc_id):
         
         fact_checks = json.loads(clean_json_string)
     except json.JSONDecodeError as e:
-        print(f"Failed to parse Gemini's response as JSON: {e}")
-        print("Raw response was:", response.text)
         return
 
     if not fact_checks:
-        print("No factual claims needed checking! Document is clean.")
         return
 
-    print(f"💡 Found {len(fact_checks)} facts to annotate. Preparing document updates...")
 
     insertions = []
     for item in fact_checks:
@@ -110,10 +103,8 @@ def batch_fact_check_doc(doc_id):
     insertions.sort(key=lambda x: x['index'], reverse=True)
 
     if not insertions:
-        print("Could not match quotes to the document. No changes made.")
         return
 
-    print("4. Writing annotations directly into the Google Doc...")
     requests = []
     for insert in insertions:
         requests.append({
@@ -130,5 +121,4 @@ def batch_fact_check_doc(doc_id):
         body={'requests': requests}
     ).execute()
 
-    print("Success! Fact-checks have been injected right beneath the relevant lines.")
 

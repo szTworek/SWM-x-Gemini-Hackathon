@@ -6,10 +6,6 @@ from dotenv import load_dotenv
 load_dotenv()
 
 def live_fact_check(transcript_line):
-    """
-    Evaluates a sentence. If it contains a factual claim, 
-    it searches Google and returns context. Otherwise, returns None.
-    """
     client = genai.Client()
     
     prompt = f"""
@@ -42,5 +38,4 @@ def live_fact_check(transcript_line):
         return result
         
     except Exception as e:
-        print(f"Fact check failed: {e}")
         return None

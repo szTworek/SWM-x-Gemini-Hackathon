@@ -8,7 +8,6 @@ from docsBot import authenticate_google, create_and_share_doc, append_text_to_do
 load_dotenv()
 
 def read_doc_text(doc_id):
-    """Extracts all text from a Google Document."""
     creds = authenticate_google()
     docs_service = build('docs', 'v1', credentials=creds)
     
@@ -25,7 +24,6 @@ def read_doc_text(doc_id):
     return full_text.strip()
 
 def generate_gemini_summary(transcript_text):
-    """Sends the transcript to Gemini using the new SDK."""
     client = genai.Client()
     
     prompt = f"""
@@ -48,22 +46,14 @@ def generate_gemini_summary(transcript_text):
     return response.text
 
 def process_meeting(transcript_doc_id):
-    """The main workflow: Read -> Summarize -> Save."""
-    print("1. Reading transcript from Google Docs...")
     transcript = read_doc_text(transcript_doc_id)
     
     if not transcript:
-        print("Error: The transcript document is empty!")
         return
         
-    print("2. Analyzing text with Gemini...")
     summary_text = generate_gemini_summary(transcript)
     
-    print("3. Creating a new Google Doc for the summary...")
     summary_id, summary_link = create_and_share_doc("Meeting Summary & Action Items")
     
-    print("4. Writing AI summary into the new document...")
     append_text_to_doc(summary_id, summary_text)
     
-    print("\nAll Done! Here is your AI Meeting Summary:")
-    print(f"Link: {summary_link}")
