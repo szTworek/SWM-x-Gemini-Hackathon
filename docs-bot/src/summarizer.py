@@ -27,12 +27,14 @@ def generate_gemini_summary(transcript_text):
     client = genai.Client()
     
     prompt = f"""
-    You are an expert executive assistant. Please read the following meeting transcript and provide a highly structured summary.
-    
-    Include:
-    1. A brief 2-3 sentence overview of what was discussed.
-    2. Key Takeaways (bullet points).
-    3. Action Items (who needs to do what, if mentioned).
+    You are an expert executive assistant. Read the meeting transcript and return concise markdown-like text.
+
+    Formatting requirements:
+    - Start with: # Meeting Summary
+    - Add section: ## Overview (2-3 sentences)
+    - Add section: ## Key Takeaways (use '-' bullets)
+    - Add section: ## Action Items (use '-' bullets, include owner when possible)
+    - If no action items exist, add '- None identified.'
     
     Transcript:
     {transcript_text}
