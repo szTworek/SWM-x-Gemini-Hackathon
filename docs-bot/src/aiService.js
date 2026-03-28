@@ -69,28 +69,23 @@ async function generateSummaryWithGemini(fullTranscriptText) {
 }
 
 async function generateMeetingSummary(fullTranscriptText) {
-  try {
-    const transcriptText = (fullTranscriptText || '').trim();
-    if (!transcriptText) {
-      return summarizeFallback('');
-    }
-
-    console.log('Generating summary via AI...');
-
-    try {
-      const generated = await generateSummaryWithGemini(transcriptText);
-      if (generated) {
-        return generated;
-      }
-    } catch (modelError) {
-      console.warn('Gemini summary failed. Falling back to local summary.', modelError.message);
-    }
-
-    return summarizeFallback(transcriptText);
-  } catch (error) {
-    console.error('Error generating summary:', error);
-    throw error;
+  const transcriptText = (fullTranscriptText || '').trim();
+  if (!transcriptText) {
+    return summarizeFallback('');
   }
+
+  console.log('Generating summary via AI...');
+
+  try {
+    const generated = await generateSummaryWithGemini(transcriptText);
+    if (generated) {
+      return generated;
+    }
+  } catch (modelError) {
+    console.warn('Gemini summary failed. Falling back to local summary.', modelError.message);
+  }
+
+  return summarizeFallback(transcriptText);
 }
 
 module.exports = {

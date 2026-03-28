@@ -1,6 +1,11 @@
 require('dotenv').config();
 const { google } = require('googleapis');
 
+const SCOPES = [
+  'https://www.googleapis.com/auth/documents',
+  'https://www.googleapis.com/auth/drive',
+];
+
 function getRequiredEnv(name) {
   const value = process.env[name];
   if (!value || !value.trim()) {
@@ -38,37 +43,26 @@ function normalizePrivateKey(rawValue) {
     );
   }
 
-  return value;
+  return value.trim();
 }
 
 function getAuthClient() {
   const keyFile = process.env.GOOGLE_APPLICATION_CREDENTIALS || process.env.GOOGLE_SERVICE_ACCOUNT_KEY_FILE;
   if (keyFile && keyFile.trim()) {
-    return new google.auth.GoogleAuth({
-      keyFile: keyFile.trim(),
-      scopes: [
-        'https://www.googleapis.com/auth/documents',
-        'https://www.googleapis.com/auth/drive',
-      ],
-    });
+    return new google.auth.GoogleAuth({ keyFile: keyFile.trim(), scopes: SCOPES });
   }
 
   const clientEmail = getRequiredEnv('GOOGLE_CLIENT_EMAIL');
   const privateKeyRaw = getRequiredEnv('GOOGLE_PRIVATE_KEY');
   const privateKey = normalizePrivateKey(privateKeyRaw);
 
-  const auth = new google.auth.GoogleAuth({
+  return new google.auth.GoogleAuth({
     credentials: {
       client_email: clientEmail,
       private_key: privateKey,
     },
-    scopes: [
-      'https://www.googleapis.com/auth/documents',
-      'https://www.googleapis.com/auth/drive',
-    ],
+    scopes: SCOPES,
   });
-
-  return auth;
 }
 
 module.exports = { getAuthClient };

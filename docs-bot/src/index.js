@@ -1,10 +1,6 @@
 const meetingFlow = require('./meetingFlow');
 const { getAuthClient } = require('./auth');
 
-function readPayload(req) {
-    return req?.body || {};
-}
-
 function send(res, status, payload) {
     if (res && typeof res.status === 'function') {
         return res.status(status).send(payload);
@@ -13,23 +9,10 @@ function send(res, status, payload) {
     return { status, payload };
 }
 
-function getParticipants(payload) {
-    if (Array.isArray(payload.participants)) {
-        return payload.participants;
-    }
-    return [];
-}
-
-function getAuthClientFromCtx(ctx = {}) {
-    if (ctx.authClient) {
-        return ctx.authClient;
-    }
-    return getAuthClient();
-}
-
 async function onMeetingStartWebhook(req, res, ctx = {}) {
-    const payload = readPayload(req);
-    const authClient = getAuthClientFromCtx(ctx);
+    const payload = req?.body || {};
+    const authClient = ctx.authClient || getAuthClient();
+    const participants = Array.isArray(payload.participants) ? payload.participants : [];
 
     const meetingId = payload.meetingId || payload.meetId;
     const meetingName = payload.meetingName || payload.title || meetingId;
@@ -42,7 +25,7 @@ async function onMeetingStartWebhook(req, res, ctx = {}) {
         const result = await meetingFlow.handleMeetingStart(
             authClient,
             meetingName,
-            getParticipants(payload),
+            participants,
             meetingId
         );
 
@@ -53,8 +36,8 @@ async function onMeetingStartWebhook(req, res, ctx = {}) {
 }
 
 async function onTranscriptWebhook(req, res, ctx = {}) {
-    const payload = readPayload(req);
-    const authClient = getAuthClientFromCtx(ctx);
+    const payload = req?.body || {};
+    const authClient = ctx.authClient || getAuthClient();
 
     const meetingId = payload.meetingId || payload.meetId;
     if (!meetingId) {
@@ -82,8 +65,9 @@ async function onTranscriptWebhook(req, res, ctx = {}) {
 }
 
 async function onMeetingEndWebhook(req, res, ctx = {}) {
-    const payload = readPayload(req);
-    const authClient = getAuthClientFromCtx(ctx);
+    const payload = req?.body || {};
+    const authClient = ctx.authClient || getAuthClient();
+    const participants = Array.isArray(payload.participants) ? payload.participants : [];
 
     const meetingId = payload.meetingId || payload.meetId;
     if (!meetingId) {
@@ -95,7 +79,7 @@ async function onMeetingEndWebhook(req, res, ctx = {}) {
             authClient,
             meetingId,
             payload.transcript,
-            getParticipants(payload)
+            participants
         );
 
         return send(res, 200, {
