@@ -1,10 +1,23 @@
 from fastapi import FastAPI
-from routers import meeting
+from fastapi.middleware.cors import CORSMiddleware
 
+from routers import meeting
+from routers import config
+from routers import bot_media
 app = FastAPI()
 
-app.include_router(meeting.router)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origin_regex="chrome-extension://.*", # Zezwala na każdą wtyczkę Chrome
+    allow_origins=["*"], # Fallback dla testów z localhost
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
+app.include_router(meeting.router)
+app.include_router(config.router)
+app.include_router(bot_media.router)
 @app.get("/")
 async def root():
     return {"message": "Hello World"}
@@ -13,3 +26,4 @@ async def root():
 @app.get("/hello/{name}")
 async def say_hello(name: str):
     return {"message": f"Hello {name}"}
+

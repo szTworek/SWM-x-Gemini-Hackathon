@@ -1,0 +1,15 @@
+{
+  "manifest_version": 3,
+  "name": "Asystent Google Meet",
+  "version": "1.0",
+  "action": {
+    "default_popup": "popup.html"
+  },
+  "permissions": [
+    "tabs",
+    "activeTab",
+    "windows",
+    "storage",
+    "alwaysOnTopWindows"
+  ]
+}
