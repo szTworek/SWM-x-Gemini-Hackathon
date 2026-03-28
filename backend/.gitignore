@@ -23,3 +23,10 @@ coverage.xml
 *.swp
 
 .ipynb_checkpoints
+
+meetings_db.json
+
+test_audio_*.wav
+test_video_*.zip
+
+test_video_*
