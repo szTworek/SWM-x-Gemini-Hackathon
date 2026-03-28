@@ -6,11 +6,35 @@ import random
 from typing import Dict, List
 from services.meeting import create_meeting_if_not_exists, get_meeting, set_bot_active
 from services.recallai_api import create_recall_bot, send_chat_message, get_chat_messages
+from services.docs_bot_api import start_meeting_pipeline, forward_recall_transcript, get_pipeline_status
 
 router = APIRouter(prefix="/meeting")
 
 active_connections: Dict[str, List[WebSocket]] = {}
 active_runners: Dict[str, asyncio.Task] = {}
+
+
+def _run_background(coro, label: str):
+    task = asyncio.create_task(coro)
+
+    def _done_callback(done_task: asyncio.Task):
+        try:
+            done_task.result()
+        except Exception as error:
+            logging.warning(f"[BACKGROUND:{label}] failed: {error}")
+
+    task.add_done_callback(_done_callback)
+    return task
+
+
+async def _start_docs_pipeline_and_share_link(meet_id: str, bot_id: str):
+    docs_result = await start_meeting_pipeline(
+        meet_id,
+        title=f"Meeting {meet_id} - Live Transcript",
+    )
+    transcript_link = docs_result.get("docLink") if docs_result else None
+    if transcript_link:
+        await send_chat_message(bot_id, f"Live transcript: {transcript_link}")
 
 async def meet_runner(meet_id):
     print(f"[Runner] Starting task for meeting: {meet_id}")
@@ -70,12 +94,29 @@ async def create_bot(meet_id: str):
 
     set_bot_active(meet_id=meet_id, bot_id=bot_id, is_active=True)
 
-    return {"message": "Bot creation process started", "bot_id": bot_id}
+    _run_background(_start_docs_pipeline_and_share_link(meet_id, bot_id), f"docs-start-{meet_id}")
+
+    return {
+        "message": "Bot creation process started",
+        "bot_id": bot_id,
+        "docs_pipeline": {"status": "starting_async"},
+    }
+
+
+@router.get("/{meet_id}/docs-status")
+async def docs_status(meet_id: str):
+    status = await get_pipeline_status(meet_id)
+    if not status:
+        raise HTTPException(status_code=502, detail="docs-bot unavailable")
+    return status
 
 
 @router.post("/webhook/recall")
 async def recall_webhook(payload: dict):
     event = payload.get("event")
+
+    if event in ("transcript.data", "transcript.partial_data"):
+        _run_background(forward_recall_transcript(payload), f"docs-forward-{event}")
 
     if event in ("transcript.data", "transcript.partial_data"):
         data_block = payload.get("data", {}).get("data", {})

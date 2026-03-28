@@ -8,6 +8,13 @@ router = APIRouter(prefix='/meeting')
 
 class StartMeetingRequest(BaseModel):
     title: str | None = None
+    chatWebhookUrl: str | None = None
+
+
+class TranscriptLineRequest(BaseModel):
+    participantName: str = 'Unknown'
+    text: str
+    isFinal: bool = True
 
 
 class EndMeetingResponse(BaseModel):
@@ -15,13 +22,32 @@ class EndMeetingResponse(BaseModel):
     processed: bool
     transcriptDocId: str | None = None
     transcriptDocLink: str | None = None
+    summaryDocId: str | None = None
+    summaryDocLink: str | None = None
     reason: str | None = None
 
 
 @router.post('/{meet_id}/start')
 async def start_meeting(meet_id: str, payload: StartMeetingRequest | None = None):
     try:
-        return pipeline_service.start_meeting(meet_id, payload.title if payload else None)
+        return pipeline_service.start_meeting(
+            meet_id,
+            payload.title if payload else None,
+            payload.chatWebhookUrl if payload else None,
+        )
+    except Exception as error:
+        raise HTTPException(status_code=500, detail=str(error)) from error
+
+
+@router.post('/{meet_id}/transcript')
+async def add_transcript_line(meet_id: str, payload: TranscriptLineRequest):
+    try:
+        return pipeline_service.add_transcript_line(
+            meet_id=meet_id,
+            participant_name=payload.participantName,
+            text=payload.text,
+            is_final=payload.isFinal,
+        )
     except Exception as error:
         raise HTTPException(status_code=500, detail=str(error)) from error
 

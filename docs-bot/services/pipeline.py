@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import sys
+from urllib import request
 from pathlib import Path
 from typing import Dict
 
@@ -23,14 +25,34 @@ class MeetingPipelineService:
     def __init__(self) -> None:
         self._active_doc_ids: Dict[str, str] = {}
         self._active_doc_links: Dict[str, str] = {}
+        self._chat_webhook_urls: Dict[str, str] = {}
 
-    def start_meeting(self, meet_id: str, title: str | None = None) -> dict:
+    def _notify_chat(self, meet_id: str, text: str) -> bool:
+        webhook_url = self._chat_webhook_urls.get(meet_id)
+        if not webhook_url:
+            return False
+
+        payload = json.dumps({'meetId': meet_id, 'text': text}).encode('utf-8')
+        req = request.Request(
+            webhook_url,
+            data=payload,
+            method='POST',
+            headers={'Content-Type': 'application/json'},
+        )
+        with request.urlopen(req, timeout=5):
+            return True
+
+    def start_meeting(self, meet_id: str, title: str | None = None, chat_webhook_url: str | None = None) -> dict:
+        if chat_webhook_url:
+            self._chat_webhook_urls[meet_id] = chat_webhook_url
+
         if meet_id in self._active_doc_ids:
             return {
                 'meetId': meet_id,
                 'docId': self._active_doc_ids[meet_id],
                 'docLink': self._active_doc_links[meet_id],
                 'alreadyStarted': True,
+                'chatNotified': False,
             }
 
         doc_title = title or f'Live Meeting Transcript {meet_id}'
@@ -40,11 +62,14 @@ class MeetingPipelineService:
 
         self._active_doc_ids[meet_id] = doc_id
         self._active_doc_links[meet_id] = doc_link
+        chat_text = f'Live transcript started for {meet_id}: {doc_link}'
+        chat_notified = self._notify_chat(meet_id, chat_text)
         return {
             'meetId': meet_id,
             'docId': doc_id,
             'docLink': doc_link,
             'alreadyStarted': False,
+            'chatNotified': chat_notified,
         }
 
     def add_transcript_line(self, meet_id: str, participant_name: str, text: str, is_final: bool) -> dict:
@@ -76,16 +101,25 @@ class MeetingPipelineService:
             return {'meetId': meet_id, 'processed': False, 'reason': 'meeting_not_started'}
 
         batch_fact_check_doc(doc_id)
-        process_meeting(doc_id)
+        summary = process_meeting(doc_id)
 
         transcript_link = self._active_doc_links.pop(meet_id)
         self._active_doc_ids.pop(meet_id, None)
+        self._chat_webhook_urls.pop(meet_id, None)
+
+        summary_doc_id = None
+        summary_doc_link = None
+        if isinstance(summary, dict):
+            summary_doc_id = summary.get('summaryDocId')
+            summary_doc_link = summary.get('summaryDocLink')
 
         return {
             'meetId': meet_id,
             'processed': True,
             'transcriptDocId': doc_id,
             'transcriptDocLink': transcript_link,
+            'summaryDocId': summary_doc_id,
+            'summaryDocLink': summary_doc_link,
         }
 
     def status(self, meet_id: str) -> dict:

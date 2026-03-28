@@ -1,4 +1,5 @@
 import logging
+import asyncio
 
 from fastapi import HTTPException, APIRouter
 from pydantic import BaseModel
@@ -6,8 +7,23 @@ from pydantic import BaseModel
 from services.meeting import update_meeting_config, set_bot_active, get_active_bot_meet_ids
 from services.recallai_api import leave_recall_bot
 from services.meeting import get_meeting
+from services.docs_bot_api import end_meeting_pipeline
 
 router = APIRouter(prefix="/meeting")
+
+
+def _run_background(coro, label: str):
+    task = asyncio.create_task(coro)
+
+    def _done_callback(done_task: asyncio.Task):
+        try:
+            result = done_task.result()
+            logging.info(f"[BACKGROUND:{label}] completed: {result}")
+        except Exception as error:
+            logging.warning(f"[BACKGROUND:{label}] failed: {error}")
+
+    task.add_done_callback(_done_callback)
+    return task
 
 class ConfigPayload(BaseModel):
     jira_key: str | None = None
@@ -48,6 +64,12 @@ async def remove_bot(meet_id: str):
     if not success:
         raise HTTPException(status_code=500, detail="Failed to make bot leave via Recall API")
 
+    _run_background(end_meeting_pipeline(meet_id), f"docs-end-{meet_id}")
+
     set_bot_active(meet_id, is_active=False)
 
-    return {"status": "success", "message": "Bot opuścił spotkanie."}
+    return {
+        "status": "success",
+        "message": "Bot opuścił spotkanie.",
+        "docs_pipeline": {"status": "ending_async"},
+    }

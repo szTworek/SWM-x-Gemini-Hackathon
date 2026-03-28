@@ -51,11 +51,28 @@ def process_meeting(transcript_doc_id):
     transcript = read_doc_text(transcript_doc_id)
     
     if not transcript:
-        return
+        return {
+            'processed': False,
+            'reason': 'empty_transcript',
+            'summaryDocId': None,
+            'summaryDocLink': None,
+        }
         
     summary_text = generate_gemini_summary(transcript)
     
     summary_id, summary_link = create_and_share_doc("Meeting Summary & Action Items")
+    if not summary_id:
+        return {
+            'processed': False,
+            'reason': 'summary_doc_create_failed',
+            'summaryDocId': None,
+            'summaryDocLink': None,
+        }
     
     append_text_to_doc(summary_id, summary_text)
+    return {
+        'processed': True,
+        'summaryDocId': summary_id,
+        'summaryDocLink': summary_link,
+    }
     
